@@ -31,7 +31,7 @@ def test_rational_polynomial_addition():
 def test_rational_polynomial_addition2():
     a = RationalPolynomial.from_string("(2 + 2*x + 2*x^2)/(2 + x)")
     b = RationalPolynomial.from_string("(2 - x)/(-2 + x + x^2)")
-    c = RationalPolynomial.from_string("(-x + 2*x^3 )/(-2 + x + x^2)")
+    c = RationalPolynomial.from_string("(-x + 2*x^3)/(-2 + x + x^2)")
     assert a + b == c
 
 def test_rational_polynomial_subtraction():
@@ -41,7 +41,7 @@ def test_rational_polynomial_subtraction():
     assert a - b == c
 
 def test_rational_polynomial_subtraction2():
-    a = RationalPolynomial.from_string("(-x + 2*x^3 )/(-2 + x + x^2)")
+    a = RationalPolynomial.from_string("(-x + 2*x^3)/(-2 + x + x^2)")
     b = RationalPolynomial.from_string("(2 - x)/(-2 + x + x^2)")
     c = RationalPolynomial.from_string("(2 + 2*x + 2*x^2)/(2 + x)")
     assert a - b == c
