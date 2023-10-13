@@ -36,54 +36,32 @@ class DifferenceUniformGrid(Difference):
         self.convergence_order = convergence_order
         self.stencil_type = stencil_type
         self.axis = axis
-        d = FinDiff(axis, grid.dx, derivative_order,
-                    acc=(convergence_order+4))
-        self.matrix = d.matrix((grid.N,), h=grid.dx,
-                               acc=(convergence_order+4))
+        n = derivative_order
+        m = convergence_order
+        # Create offsets
+        offset = math.floor((2*math.floor((n+1)/2) + m - 1)/2)
+        offsets = range(-offset, offset+1)
 
-        # # place corner elements
-        # stencil = np.array(findiff.coefs.coefficients_non_uni(
-        #     deriv=derivative_order, acc=convergence_order, coords=grid.values, idx=1)['coefficients'])/(grid.dx**derivative_order)  # [
-        # # 'center']['coefficients'])
-        # offsets = np.array(findiff.coefs.coefficients_non_uni(
-        #     deriv=derivative_order, acc=convergence_order, coords=grid.values, idx=1)['offsets'])
-        # for i in range(derivative_order + 1):
-        #     self.matrix[i, :derivative_order +
-        #                 1] = self.matrix[i][:derivative_order + 1]
-        #     self.matrix[-i - 1, -derivative_order -
-        #                 1:] = self.matrix[i][-derivative_order - 1:]
-        # print(self.matrix)
-        # # place corner elements
-        # stencil = np.array(findiff.coefs.coefficients_non_uni(
-        #     deriv=derivative_order, acc=convergence_order, coords=grid.values, idx=1)['coefficients'])/(grid.dx**derivative_order)  # [
-        # # 'center']['coefficients'])
-        # offsets = np.array(findiff.coefs.coefficients_non_uni(
-        #     deriv=derivative_order, acc=convergence_order, coords=grid.values, idx=1)['offsets'])  # [
-        # # 'center']['offsets'])
-        # print(stencil)
-        # print(offsets)
+        # Create b array and S matrix
+        b = np.zeros(shape=(len(offsets),))
+        b[n] = 1
+        S = np.zeros(shape=(len(offsets), len(offsets)))
+        for i in range(len(offsets)):
+            for j in range(len(offsets)):
+                S[i, j] = (offsets[j]*grid.dx)**i/factorial(i)
 
-        # self.matrix = sparse.diags(stencil, offsets, shape=[
-        #                            grid.N, grid.N]).tocsr()
-        # self.matrix[-1, 0] = stencil[int((len(stencil)-1)/2 - 1)]
-        # self.matrix[0, -1] = stencil[int(-((len(stencil)-1)/2 - 1))]
-        # print(stencil)
-        # print(stencil[int((len(stencil)-1)/2 - 1)])
-        # print(stencil[int(-((len(stencil)-1)/2 - 1))])
-        # print(self.matrix[-1, 0])
-        # print(self.matrix[0, -1])
-        # print(self.matrix)
-        # d2x = FinDiff(0, grid.dx, derivative_order, acc=convergence_order)
+        # solve for a coefficients
+        a = np.linalg.solve(S, b)
+        D = sparse.diags(a, offsets=offsets, shape=[grid.N, grid.N])
+        D = D.tocsr()
 
-        # coeffs = np.array(findiff.coefficients(deriv=derivative_order, acc=convergence_order)[
-        #     'center']['coefficients'])
-        # offsets = np.array(findiff.coefficients(
-        #     deriv=derivative_order, acc=convergence_order)[
-        #     'center']['offsets'])
-        # self.matrix = (sparse.diags(coeffs, offsets, shape=[
-        #                N, N])/(h**self.derivative_order)).tocsr()
-        # self.matrix[0,-1] =
-        # self.matrix[-1,0] =
+        # Place corner elements
+        for i in range(offset):
+            for j in range(offset-i):
+                D[i, -(j+1)] = a[offset-i-j-1]
+                D[-(i+1), j] = a[-(offset-i-j)]
+
+        self.matrix = D
 
 
 class DifferenceNonUniformGrid(Difference):
