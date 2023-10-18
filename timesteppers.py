@@ -105,28 +105,40 @@ class AdamsBashforth(ExplicitTimestepper):
     def __init__(self, u, f, steps, dt):
         super().__init__(u, f)
         self.steps = steps
-        self.uPast = np.zeros(shape=(len(self.u), steps-1))
-
-    def _step(self, dt):
+        self.uPast = np.zeros(shape=(len(self.u), steps))
+        self.dt = dt
 
         # Calculate coefficients a_i
         t = sp.symbols('t')
-        a = [1]  # Initialize the list with 1 because the first coefficient is 1
-        for i in range(1, self.steps):
-            lagrange_polynomial = 1
-            for j in range(self.steps):
-                if j != i:
-                    lagrange_polynomial *= (t - j)
-            a_i = sp.integrate(lagrange_polynomial,
-                               (t, 0, self.steps - 1)) / sp.factorial(i)
-            a.append(a_i)
+        self.a = np.zeros(shape=(steps,))
+        for j in range(steps):
+            # Use formula for a_i
+            poly = 1
+            coef = (-1)**j/(sp.factorial(j) *
+                            sp.factorial(steps - j - 1))
+            for i in range(steps):
+                if i != j:
+                    poly *= (t + i)
 
-        if self.iter < self.steps:  # Use Euler
+            integral = sp.integrate(poly, (t, 0, 1))
+            self.a[steps-j-1] = coef * integral
+
+    def _step(self, dt):
+        s = self.steps
+
+        if self.iter < s:  # Use Euler / We only have the first s-1 us saved
             self.uPast[:, self.iter] = self.u + dt*self.f(self.u)
-            return self.u+dt*self.f(self.u)
-        else:
-            sum = np.zeros(shape=(len(self.u),))
-            for step in range(self.steps-1):
+            return self.uPast[:, self.iter]
 
-                sum = sum + a[step]*self.f(self.uPast[:, step-1])
-            return self.u+sum
+        if self.iter >= s:
+
+            interp = np.zeros(shape=(len(self.u),))
+            for step in range(s):
+
+                interp += self.a[step] * self.f(self.uPast[:, step])
+
+            for i in range(s-1):
+                self.uPast[:, i] = self.uPast[:, i+1]
+            self.uPast[:, -1] = self.u + dt*interp
+
+            return self.uPast[:, -1]
