@@ -1,9 +1,6 @@
 import numpy as np
 from scipy.special import factorial
 from scipy import sparse
-import findiff
-from findiff import FinDiff
-
 
 class UniformPeriodicGrid:
 
@@ -25,7 +22,21 @@ class NonUniformPeriodicGrid:
 class Difference:
 
     def __matmul__(self, other):
-        return self.matrix@other
+        return self.matrix @ other
+
+
+class ForwardFiniteDifference(Difference):
+
+    def __init__(self, grid):
+        h = grid.dx
+        N = grid.N
+        j = [0, 1]
+        diags = np.array([-1/h, 1/h])
+        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
+        matrix = matrix.tocsr()
+        matrix[-1, 0] = 1/h
+        self.matrix = matrix
+
 
 class CenteredFiniteDifference(Difference):
 
@@ -41,51 +52,35 @@ class CenteredFiniteDifference(Difference):
         self.matrix = matrix
 
 
-class DifferenceUniformGrid(Difference):
+class CenteredFiniteSecondDifference(Difference):
 
-    def __init__(self, derivative_order, convergence_order, grid, axis=0, stencil_type='centered'):
-
-        self.derivative_order = derivative_order
-        self.convergence_order = convergence_order
-        self.stencil_type = stencil_type
-        self.axis = axis
-        n = derivative_order
-        m = convergence_order
-        # Create offsets
-        offset = math.floor((2*math.floor((n+1)/2) + m - 1)/2)
-        offsets = range(-offset, offset+1)
-
-        # Create b array and S matrix
-        b = np.zeros(shape=(len(offsets),))
-        b[n] = 1
-        S = np.zeros(shape=(len(offsets), len(offsets)))
-        for i in range(len(offsets)):
-            for j in range(len(offsets)):
-                S[i, j] = (offsets[j]*grid.dx)**i/factorial(i)
-
-        # solve for a coefficients
-        a = np.linalg.solve(S, b)
-        D = sparse.diags(a, offsets=offsets, shape=[grid.N, grid.N])
-        D = D.tocsr()
-
-        # Place corner elements
-        for i in range(offset):
-            for j in range(offset-i):
-                D[i, -(j+1)] = a[offset-i-j-1]
-                D[-(i+1), j] = a[-(offset-i-j)]
-
-        self.matrix = D
+    def __init__(self, grid):
+        h = grid.dx
+        N = grid.N
+        j = [-1, 0, 1]
+        diags = np.array([1/h**2, -2/h**2, 1/h**2])
+        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
+        matrix = matrix.tocsr()
+        matrix[-1, 0] = 1/h**2
+        matrix[0, -1] = 1/h**2
+        self.matrix = matrix
 
 
-class DifferenceNonUniformGrid(Difference):
+class CenteredFiniteDifference4(Difference):
 
-    def __init__(self, derivative_order, convergence_order, grid, axis=0, stencil_type='centered'):
+    def __init__(self, grid):
+        h = grid.dx
+        N = grid.N
+        j = [-2, -1, 0, 1, 2]
+        diags = np.array([1, -8, 0, 8, -1])/(12*h)
+        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
+        matrix = matrix.tocsr()
+        matrix[-2, 0] = -1/(12*h)
+        matrix[-1, 0] = 8/(12*h)
+        matrix[-1, 1] = -1/(12*h)
 
-        self.derivative_order = derivative_order
-        self.convergence_order = convergence_order
-        self.stencil_type = stencil_type
-        self.axis = axis
-        d = FinDiff(axis, order=derivative_order,
-                    acc=(convergence_order+4))
-        self.matrix = d.matrix((grid.N,), coords=grid.values,
-                               acc=(convergence_order+4))
+        matrix[0, -2] = 1/(12*h)
+        matrix[0, -1] = -8/(12*h)
+        matrix[1, -1] = 1/(12*h)
+        self.matrix = matrix
+
