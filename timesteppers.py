@@ -1,4 +1,4 @@
-# This code is submitted on behalf of Noah Igram
+# This code is submitted on behalf of Noah Igram\
 import numpy as np
 from scipy import sparse
 import sympy as sp
