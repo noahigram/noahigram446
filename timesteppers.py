@@ -179,92 +179,92 @@ class CrankNicolson(ImplicitTimestepper):
 class BackwardDifferentiationFormula(ImplicitTimestepper):
 
     def __init__(self, u, L, steps):
-
+        self.s = steps
         self.u = u
         self.L = L
-        self.s = steps
-        # Need to keep track of s previous us
-        self.uPast = np.zeros(shape=(len(u), steps))
-        self.uPast[:, 0] = u
         self.t = 0
         self.iter = 0
         self.dt = None
         self.I = sparse.eye(len(u), len(u))
 
-        # calculate a coefficients
-        # Create polynomial
-        w = sp.symbols("w")
-
-        self.a = []
-        self.B = []
-
-        for i in range(1, self.s+1):
-            Bi = 0
-            pol = 0
-
-            for m in range(1, i+1):
-                Bi += 1/m
-                pol += (w**(i-m))*(w-1)**m / m
-
-            Bi = 1/Bi
-            pol *= Bi
-            self.a.append(sp.Poly(pol).coeffs()[1:])
-            self.B.append(Bi)
-        print(self.a)
-        print(self.B)
+        # Need to keep track of s previous us and dts
+        self.uPast = u
+        self.dtPast = np.zeros(shape=(steps,))
 
     def _step(self, dt):
-
-        # for first s-1 timesteps use lower order BDF
-        if self.iter < self.s-1:
-            # Backwards Euler
-
-            # self.dt = dt
-            self.LHS = self.I - self.B[self.iter]*dt*self.L.matrix
+        # First step use backward Euler
+        if self.iter == 0:
+            self.LHS = self.I - dt*self.L.matrix
             self.LU = spla.splu(self.LHS.tocsc(), permc_spec='NATURAL')
+            uNew = self.LU.solve(self.u)
+            self.uPast = np.column_stack((uNew, self.uPast))
+            self.dtPast[0] = dt
+            return uNew
 
-            self.RHS = np.zeros(shape=(len(self.u),))
-            for i in range(self.s-1):
-                print(i)
-                print(self.a[self.iter][0])
-                self.RHS = self.RHS - \
-                    self.a[self.iter][i]*self.uPast[:, self.s-1-i]
-            # store past us
-            self.uPast[:, self.iter+1] = self.LU.solve(self.u)
+        # Use order self.iter BDF
+        elif self.iter < self.s:
+            # Shift timesteps
+            self.shift_dt(dt)
+            self.a = self.calculate_coeffs(self.iter+1)
 
-            return self.uPast[:, self.iter+1]
+            # LU decomp
+            self.LHS = self.L.matrix - self.a[0]*self.I
+            self.LU = spla.splu(self.LHS.tocsc(), permc_spec="NATURAL")
 
-        else:  # Use order s BDF
-            # if first step in higher order scheme calculate RHS
-            if self.iter == self.s-1:
-                print(self.iter)
+            # Calculate RHS
+            self.RHS = np.transpose(self.a[1:])@np.transpose(self.uPast)
+            uNew = self.LU.solve(np.transpose(self.RHS)).reshape(-1, 1)
+            self.uPast = np.column_stack((uNew, self.uPast))
+            return uNew
 
-                self.RHS = np.zeros(shape=(len(self.u),))
-                self.LHS = self.I - self.B[self.iter]*dt*self.L.matrix
-                self.LU = spla.splu(self.LHS.tocsc(), permc_spec='NATURAL')
-                for i in range(self.s-1):
-                    print(i)
-                    self.RHS = self.RHS - \
-                        self.a[self.iter][i]*self.uPast[:, self.iter-i]
-                if dt != self.dt:
-                    self.dt = dt
+        # Use order s BDF
+        else:
 
-            # if dt != self.dt:
-            self.dt = dt
-            # Redo LU decomp
-            self.LHS = self.I - self.B[self.s-1]*dt*self.L.matrix
-            self.LU = spla.splu(self.LHS.tocsc(), permc_spec='NATURAL')
-            self.RHS = np.zeros(shape=(len(self.u),))
-            #self.RHS = 0*self.RHS
-            for i in range(self.s):
+            # Need to cut off last uPast before rest of iterations
+            if self.iter == self.s:
+                self.uPast = self.uPast[:, :-1]
 
-                self.RHS = self.RHS - \
-                    self.a[self.s-1][i]*self.uPast[:, self.s-1-i]
+            # Shift timesteps
+            self.shift_dt(dt)
 
-                # Shift past us, eliminate first column, add column at end
-            for i in range(0, self.s-1):
-                self.uPast[:, i] = self.uPast[:, i+1]
+            # Calculate a coefficients
+            self.a = self.calculate_coeffs(self.s)
 
-            self.RHS = np.asarray(self.RHS, dtype='float64')
-            self.uPast[:, self.s-1] = self.LU.solve(self.RHS)
-            return self.uPast[:, self.s-1]
+            # LU decomp
+            self.LHS = self.L.matrix - self.a[0]*self.I
+            self.LU = spla.splu(self.LHS.tocsc(), permc_spec="NATURAL")
+
+            self.RHS = self.a[1:]@np.transpose(self.uPast)
+            uNew = self.LU.solve(np.transpose(self.RHS))
+            self.uPast = np.column_stack((uNew, self.uPast))[:, :-1]
+            return uNew
+
+    # calculate_coeffs() calculates the a coefficients to solve the BDF timestepper
+    def calculate_coeffs(self, s):
+
+        A = np.zeros(shape=(s+1, s+1))
+        B = np.zeros(shape=(s+1,))
+        B[1] = 1
+        A[:, 0] = 0
+        A[0, :] = 1
+        # need to make list of dt sums
+        dtSums = np.zeros((s,))
+        dtSum = 0
+        for i in range(s):
+            dtSum += self.dtPast[i]
+            dtSums[i] = dtSum
+
+        for i in range(s):
+            for j in range(s):
+                A[i+1, j+1] = (-dtSums[j])**(i+1) / factorial(i+1)
+
+        coeffs = np.linalg.solve(A, B)
+        return coeffs
+
+    # shift_dt function shifts dts over by one, and inserts current dt in front
+    def shift_dt(self, dt):
+
+        for i in range(self.s-1, 0, -1):
+            self.dtPast[i] = self.dtPast[i-1]
+        self.dtPast[0] = dt
+
