@@ -2,6 +2,7 @@ import numpy as np
 from scipy import sparse
 import scipy.sparse.linalg as spla
 import sympy as sp
+from scipy.special import factorial
 
 
 class Timestepper:
