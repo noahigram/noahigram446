@@ -3,6 +3,7 @@ from scipy import sparse
 import scipy.sparse.linalg as spla
 import sympy as sp
 from scipy.special import factorial
+from collections import deque
 
 
 class Timestepper:
@@ -268,4 +269,167 @@ class BackwardDifferentiationFormula(ImplicitTimestepper):
         for i in range(self.s-1, 0, -1):
             self.dtPast[i] = self.dtPast[i-1]
         self.dtPast[0] = dt
+
+# state vector has a list of variables, and data attribute which is a single vector containing variable data
+class StateVector:
+
+    def __init__(self, variables):
+        var0 = variables[0]
+        self.N = len(var0)
+        size = self.N*len(variables)
+        self.data = np.zeros(size)
+
+        self.variables = variables
+        self.gather()
+
+    # gather method moves data from variables to vector
+    def gather(self):
+        for i, var in enumerate(self.variables):
+            np.copyto(self.data[i*self.N:(i+1)*self.N], var)
+
+    # scatter method moves data from vector to variables
+    # scatter is called right after each self._step() call
+    def scatter(self):
+        for i, var in enumerate(self.variables):
+            np.copyto(var, self.data[i*self.N:(i+1)*self.N])
+
+
+class IMEXTimestepper(Timestepper):
+
+    def __init__(self, eq_set):
+        super().__init__()
+        self.X = eq_set.X
+        self.M = eq_set.M
+        self.L = eq_set.L
+        self.F = eq_set.F
+
+    def step(self, dt):
+        self.X.data = self._step(dt)
+        self.X.scatter()
+        self.dt = dt
+        self.t += dt
+        self.iter += 1
+
+
+class Euler(IMEXTimestepper):
+
+    def _step(self, dt):
+        if dt != self.dt:
+            LHS = self.M + dt*self.L
+            self.LU = spla.splu(LHS.tocsc(), permc_spec='NATURAL')
+
+        RHS = self.M @ self.X.data + dt*self.F(self.X)
+        return self.LU.solve(RHS)
+
+
+class CNAB(IMEXTimestepper):
+
+    def _step(self, dt):
+        if self.iter == 0:
+            # Euler
+            LHS = self.M + dt*self.L
+            LU = spla.splu(LHS.tocsc(), permc_spec='NATURAL')
+
+            self.FX = self.F(self.X)
+            RHS = self.M @ self.X.data + dt*self.FX
+            self.FX_old = self.FX
+            return LU.solve(RHS)
+        else:
+            if dt != self.dt or self.iter == 1:
+                LHS = self.M + dt/2*self.L
+                self.LU = spla.splu(LHS.tocsc(), permc_spec='NATURAL')
+
+            self.FX = self.F(self.X)
+            RHS = self.M @ self.X.data - 0.5*dt*self.L @ self.X.data + \
+                3/2*dt*self.FX - 1/2*dt*self.FX_old
+            self.FX_old = self.FX
+            return self.LU.solve(RHS)
+
+
+class BDFExtrapolate(IMEXTimestepper):
+
+    def __init__(self, eq_set, steps):
+        # sets self.X, self.M, self.L, self.F according to equation set
+        super().__init__(eq_set)
+        self.s = steps
+
+        # Keep track of past X and past F
+        self.xPast = self.X.data
+        self.fxPast = self.F(self.X)
+
+    def _step(self, dt):
+
+        if self.iter == 0:  # first iteration use Euler
+
+            LHS = self.M + dt*self.L
+            self.LU = spla.splu(LHS.tocsc(), permc_spec='NATURAL')
+            RHS = self.M @ self.X.data + dt*self.F(self.X)
+            return self.LU.solve(RHS)
+
+        elif self.iter < self.s:  # Use order self.iter method
+
+            # Update past Xs and F(X)s
+            self.xPast = np.column_stack((self.X.data, self.xPast))
+            self.fxPast = np.column_stack((self.F(self.X), self.fxPast))
+
+            # calculate coefficients a's and b's
+            self.calc_coeffs(self.iter+1, dt)
+
+            # LU decomp
+            self.LHS = self.L + self.a[0]*self.M
+            self.LU = spla.splu(self.LHS.tocsc(), permc_spec="NATURAL")
+            RHS = np.zeros((len(self.X.data)))
+            RHS = -self.M@(self.a[1:]@np.transpose(self.xPast)
+                           ) + self.b@np.transpose(self.fxPast)
+
+            return self.LU.solve(RHS)
+
+        else:  # Use order s method
+
+            self.xPast = np.column_stack((self.X.data, self.xPast))[:, :-1]
+            self.fxPast = np.column_stack(
+                (self.F(self.X), self.fxPast))[:, :-1]
+
+            if self.iter == self.s:
+                # recalculate coefficients (order s)
+                self.calc_coeffs(self.iter, dt)
+
+                # should only do LU decomp on first iter of order s
+                a0 = self.a[0]
+                self.LHS = self.L + self.a[0] * self.M
+                self.LU = spla.splu(self.LHS.tocsc(), permc_spec="NATURAL")
+
+            # Form RHS
+            RHS = -self.M@(self.a[1:]@np.transpose(self.xPast)
+                           ) + self.b@np.transpose(self.fxPast)
+            xNew = self.LU.solve(RHS)
+            return xNew
+
+    # Calculate coefficients ai and bi for a given order
+    def calc_coeffs(self, s, dt):
+
+        A = np.zeros((s+1, s+1))
+        A2 = np.zeros((s, s))
+        B1 = np.zeros((s+1,))
+        B2 = np.zeros((s,))
+        A[:, 0] = 0
+        A[0, :] = 1
+        A2[0, :] = 1
+        B1[1] = 1
+        B2[0] = 1  # is this the same for calculating the bs?????
+
+        for i in range(s):
+            for j in range(s):
+                A[i+1, j+1] = (-(j+1)*dt)**(i+1) / factorial(i+1)
+
+        for i in range(s):
+            for j in range(s):
+                if i == 0:
+                    A2[i, j] = 1
+                else:
+                    A2[i, j] = (-(j+1)*dt)**(i) / factorial(i)
+
+        # calculate a's and b's
+        self.a = np.linalg.solve(A, B1)
+        self.b = np.linalg.solve(A2, B2)
 
