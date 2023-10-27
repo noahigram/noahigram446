@@ -4,7 +4,7 @@ from scipy import sparse
 import scipy.sparse.linalg as spla
 import sympy as sp
 from scipy.special import factorial
-from collections import deque
+
 
 
 class Timestepper:
