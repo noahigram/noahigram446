@@ -1,6 +1,7 @@
-from timesteppers import StateVector
+from timesteppers import StateVector, CrankNicolson, RK22
 from scipy import sparse
 import numpy as np
+import finite
 
 class ReactionDiffusion2D:
 
