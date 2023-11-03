@@ -2,6 +2,52 @@ from timesteppers import StateVector
 from scipy import sparse
 import numpy as np
 
+class ReactionDiffusion2D:
+
+    def __init__(self, c, D, dx2, dy2):
+
+        self.t = 0
+        self.iter = 0
+        self.X = StateVector([c])
+
+        self.F = lambda c: c.data*(1-c.data)
+
+        # Operators A B and G
+        self.dx2 = Diffusionx(c, D, dx2)
+        self.dy2 = Diffusiony(c, D, dy2)
+        self.ts_x = CrankNicolson(self.dx2, 0)
+        self.ts_y = CrankNicolson(self.dy2, 1)
+        self.ts_react = RK22(self)
+
+    def step(self, dt):
+
+        self.ts_react.step(dt/2)
+
+        self.ts_y.step(dt/2)
+
+        self.ts_x.step(dt)
+        self.ts_y.step(dt/2)
+        self.ts_react.step(dt/2)
+
+        self.t += dt
+        self.iter += 1
+
+
+class Diffusionx:
+    def __init__(self, c, D, dx2):
+        self.X = StateVector([c], axis=0)
+        N = c.shape[0]
+        self.M = sparse.eye(N, N)
+        self.L = -D*dx2.matrix
+
+
+class Diffusiony:
+    def __init__(self, c, D, dy2):
+        self.X = StateVector([c], axis=1)
+        N = c.shape[0]
+        self.M = sparse.eye(N, N)
+        self.L = -D*dy2.matrix
+
 
 class ViscousBurgers:
 
