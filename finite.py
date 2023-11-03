@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.special import factorial
 from scipy import sparse
+from farray import apply_matrix, reshape_vector
 
 class UniformPeriodicGrid:
 
@@ -17,6 +18,7 @@ class NonUniformPeriodicGrid:
         self.values = values
         self.length = length
         self.N = len(values)
+
     def dx_array(self, j):
         shape = (self.N, len(j))
         dx = np.zeros(shape)
@@ -39,70 +41,42 @@ class NonUniformPeriodicGrid:
         return dx
 
 
+class Domain:
+
+    def __init__(self, grids):
+        self.dimension = len(grids)
+        self.grids = grids
+        shape = []
+        for grid in self.grids:
+            shape.append(grid.N)
+        self.shape = shape
+
+    def values(self):
+        v = []
+        for i, grid in enumerate(self.grids):
+            grid_v = grid.values
+            grid_v = reshape_vector(grid_v, self.dimension, i)
+            v.append(grid_v)
+        return v
+
+    def plotting_arrays(self):
+        v = []
+        expanded_shape = np.array(self.shape, dtype=np.int)
+        expanded_shape += 1
+        for i, grid in enumerate(self.grids):
+            grid_v = grid.values
+            grid_v = np.concatenate((grid_v, [grid.length]))
+            grid_v = reshape_vector(grid_v, self.dimension, i)
+            grid_v = np.broadcast_to(grid_v, expanded_shape)
+            v.append(grid_v)
+        return v
+
+
 class Difference:
 
     def __matmul__(self, other):
-        return self.matrix @ other
+        return apply_matrix(self.matrix, other, axis=self.axis)
 
-
-class ForwardFiniteDifference(Difference):
-
-    def __init__(self, grid):
-        h = grid.dx
-        N = grid.N
-        j = [0, 1]
-        diags = np.array([-1/h, 1/h])
-        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
-        matrix = matrix.tocsr()
-        matrix[-1, 0] = 1/h
-        self.matrix = matrix
-
-
-class CenteredFiniteDifference(Difference):
-
-    def __init__(self, grid):
-        h = grid.dx
-        N = grid.N
-        j = [-1, 0, 1]
-        diags = np.array([-1/(2*h), 0, 1/(2*h)])
-        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
-        matrix = matrix.tocsr()
-        matrix[-1, 0] = 1/(2*h)
-        matrix[0, -1] = -1/(2*h)
-        self.matrix = matrix
-
-
-class CenteredFiniteSecondDifference(Difference):
-
-    def __init__(self, grid):
-        h = grid.dx
-        N = grid.N
-        j = [-1, 0, 1]
-        diags = np.array([1/h**2, -2/h**2, 1/h**2])
-        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
-        matrix = matrix.tocsr()
-        matrix[-1, 0] = 1/h**2
-        matrix[0, -1] = 1/h**2
-        self.matrix = matrix
-
-
-class CenteredFiniteDifference4(Difference):
-
-    def __init__(self, grid):
-        h = grid.dx
-        N = grid.N
-        j = [-2, -1, 0, 1, 2]
-        diags = np.array([1, -8, 0, 8, -1])/(12*h)
-        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
-        matrix = matrix.tocsr()
-        matrix[-2, 0] = -1/(12*h)
-        matrix[-1, 0] = 8/(12*h)
-        matrix[-1, 1] = -1/(12*h)
-
-        matrix[0, -2] = 1/(12*h)
-        matrix[0, -1] = -8/(12*h)
-        matrix[1, -1] = 1/(12*h)
-        self.matrix = matrix
 
 class DifferenceUniformGrid(Difference):
 
@@ -213,6 +187,71 @@ class DifferenceNonUniformGrid(Difference):
                 matrix[-jmax+i,:i+1] = self.stencil[-jmax+i, -i-1:]
 
         self.matrix = matrix
+
+
+class ForwardFiniteDifference(Difference):
+
+    def __init__(self, grid, axis=0):
+        self.axis = axis
+        h = grid.dx
+        N = grid.N
+        j = [0, 1]
+        diags = np.array([-1/h, 1/h])
+        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
+        matrix = matrix.tocsr()
+        matrix[-1, 0] = 1/h
+        self.matrix = matrix
+
+
+class CenteredFiniteDifference(Difference):
+
+    def __init__(self, grid, axis=0):
+        self.axis = axis
+        h = grid.dx
+        N = grid.N
+        j = [-1, 0, 1]
+        diags = np.array([-1/(2*h), 0, 1/(2*h)])
+        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
+        matrix = matrix.tocsr()
+        matrix[-1, 0] = 1/(2*h)
+        matrix[0, -1] = -1/(2*h)
+        self.matrix = matrix
+
+
+class CenteredFiniteSecondDifference(Difference):
+
+    def __init__(self, grid, axis=0):
+        self.axis = axis
+        h = grid.dx
+        N = grid.N
+        j = [-1, 0, 1]
+        diags = np.array([1/h**2, -2/h**2, 1/h**2])
+        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
+        matrix = matrix.tocsr()
+        matrix[-1, 0] = 1/h**2
+        matrix[0, -1] = 1/h**2
+        self.matrix = matrix
+
+
+class CenteredFiniteDifference4(Difference):
+
+    def __init__(self, grid, axis=0):
+        self.axis = axis
+        h = grid.dx
+        N = grid.N
+        j = [-2, -1, 0, 1, 2]
+        diags = np.array([1, -8, 0, 8, -1])/(12*h)
+        matrix = sparse.diags(diags, offsets=j, shape=[N,N])
+        matrix = matrix.tocsr()
+        matrix[-2, 0] = -1/(12*h)
+        matrix[-1, 0] = 8/(12*h)
+        matrix[-1, 1] = -1/(12*h)
+
+        matrix[0, -2] = 1/(12*h)
+        matrix[0, -1] = -8/(12*h)
+        matrix[1, -1] = 1/(12*h)
+        self.matrix = matrix
+
 
 
 
