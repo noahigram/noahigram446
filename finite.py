@@ -2,6 +2,7 @@ import numpy as np
 from scipy.special import factorial
 from scipy import sparse
 from farray import apply_matrix, reshape_vector
+import findiff
 
 class UniformPeriodicGrid:
 
