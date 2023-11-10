@@ -49,6 +49,95 @@ class Diffusiony:
         self.M = sparse.eye(N, N)
         self.L = -D*dy2.matrix
 
+class ViscousBurgers2D:
+
+    def __init__(self, u, v, nu, spatial_order, domain):
+        self.X = StateVector([u, v])
+        grid_x = domain.grids[0]
+        grid_y = domain.grids[1]
+        self.t = 0
+        self.iter = 0
+
+        # Derivatives
+        # 1st derivative in x
+        self.dx = finite.DifferenceUniformGrid(1,spatial_order,grid_x,0)
+        
+        # 1st derivative in y
+        self.dy = finite.DifferenceUniformGrid(1,spatial_order,grid_y,1)
+        
+        # 2nd derivative in x
+        dx2 = finite.DifferenceUniformGrid(2,spatial_order,grid_x,0)
+        self.d2x = DiffusionxVB(u,v,nu,dx2)
+        self.ts_x = CrankNicolson(self.d2x, 0)
+
+        # 2nd derivative in y
+        dy2 = finite.DifferenceUniformGrid(2,spatial_order,grid_y,1) 
+        self.d2y = DiffusionyVB(u,v,nu,dy2)       
+        self.ts_y = CrankNicolson(self.d2y, 1)
+
+
+        # Reaction timestepper
+        
+        def f(X):
+            N = X.N
+            u = X.data[:N,:]
+            v = X.data[N:,:]
+            
+            eq1 = -u *(self.dx @ u) - v * (self.dy @ u)
+            eq2 = -u *(self.dx @ v) - v * (self.dy @ v)
+            eq = np.vstack([eq1, eq2])
+            
+            
+            return eq
+
+        F = f
+        self.ts_advect = RK22(Advection(u,v,F))
+
+
+    def step(self, dt):
+
+        # Evolve u and v
+        self.ts_advect.step(dt/2)
+        self.ts_y.step(dt/2)
+        self.ts_x.step(dt)
+        self.ts_y.step(dt/2)
+        self.ts_advect.step(dt/2)
+        
+        # update time and iterations
+        self.t += dt
+        self.iter += 1
+
+class DiffusionxVB:
+    # Class for diffusing in x
+    # Defines X, M, L for use by Crank-Nicolson
+    def __init__(self, u,v, nu, d2x):
+        self.X = StateVector([u, v], axis=0)
+        N = u.shape[0]
+        I = sparse.eye(N,N)
+        Z = sparse.csr_matrix((N,N))
+        self.M = sparse.bmat([[I,Z],[Z,I]])
+        L1 = -nu*d2x.matrix
+        self.L = sparse.bmat([[L1,Z],[Z,L1]])
+
+class DiffusionyVB:
+    # Class for diffusing in y
+    # Defines X, M, L for use by Crank-Nicolson
+    def __init__(self, u,v, nu, d2y):
+        self.X = StateVector([u, v], axis=1)
+        N = u.shape[0]
+        I = sparse.eye(N,N)
+        Z = sparse.csr_matrix((N,N))
+        self.M = sparse.bmat([[I,Z],[Z,I]])
+        L1 = -nu*d2y.matrix
+        self.L = sparse.bmat([[L1,Z],[Z,L1]])
+
+class Advection:
+    # Class for advection terms
+    # Defines X and F for use by Range-Kutta
+    def __init__(self,u,v,F):
+        self.X = StateVector([u,v])
+        self.F = F
+
 
 class ViscousBurgers:
 
