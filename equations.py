@@ -49,6 +49,101 @@ class Diffusiony:
         self.M = sparse.eye(N, N)
         self.L = -D*dy2.matrix
 
+class DiffusionBC:
+
+    def __init__(self, c, D, spatial_order, domain):
+        self.X = StateVector([c])
+        xgrid = domain.grids[0]
+        ygrid = domain.grids[1]
+        
+        
+        
+
+        # time steppers
+        
+        self.d2x = finite.DifferenceUniformGrid(2,spatial_order,xgrid,0)
+        self.diffusionx = DiffusionxBC(c,D,self.d2x,xgrid,spatial_order)
+        self.ts_x = CrankNicolson(self.diffusionx,0)
+        
+        self.d2y = finite.DifferenceUniformGrid(2,spatial_order,ygrid,1)
+        self.diffusiony = DiffusionyBC(c,D,self.d2y)
+        self.ts_y = CrankNicolson(self.diffusiony,1)
+        self.t = 0
+        self.iter = 0
+
+    def step(self, dt):
+        
+        # Strang splitting scheme for 2nd order accuracy in time
+        # Diffuse in x, diffuse in y, diffuse in x
+        self.ts_x.step(dt)
+        self.ts_y.step(dt)
+        #self.ts_x.step(dt/2)
+        
+        # Update time and iterations
+        self.t += dt
+        self.iter += 1
+
+# Diffusion classes taken from HW 6
+class DiffusionxBC:
+    def __init__(self, c, D, dx2,grid,spatial_order):
+        self.X = StateVector([c], axis=0)
+        N = c.shape[0]
+        M = sparse.eye(N, N).tocsr()
+        M[0,:] = 0
+        M[-1,:] = 0
+        
+        self.M = M
+        self.M.eliminate_zeros()
+        
+        
+        L = -D*dx2.matrix
+        print(L)
+        L = L.tocsr()
+        # Apply BCs at left endpoint
+        L[0,:] = 0
+        L[0,0] = 1
+
+        L[-1,:] = 0
+
+        L[-1,-1] = 3 / 2 / grid.dx
+        L[-1,-2] = -2 / grid.dx
+        L[-1,-3] = 1 / 2 / grid.dx
+
+        # # Spatial order is 1
+        # if spatial_order == 1:
+        #     L[-1,-1] = 1/grid.dx
+        #     L[-1,-2] = -1/grid.dx
+        # # Spatial order is 2
+        # elif spatial_order == 2:
+
+        #     L[-1,-1] = 3 / 2 / grid.dx
+        #     L[-1,-2] = -2 / grid.dx
+        #     L[-1,-3] = 0.5 / grid.dx
+        # # spatial order is 4
+        # elif spatial_order == 4:
+        #     L[-1,-1] = 25 / 12 / grid.dx
+        #     L[-1,-2] = -4 / grid.dx
+        #     L[-1,-3] = 3 / grid.dx
+        #     L[-1,-4] = -4 / 3 / grid.dx
+        #     L[-1,-5] = 1 / 4 / grid.dx
+        # # Apply BCs at right endpoint
+        print(L)
+        self.L = L
+        self.L.eliminate_zeros()
+
+        
+
+
+class DiffusionyBC:
+    def __init__(self, c, D, dy2):
+        self.X = StateVector([c], axis=1)
+        N = c.shape[0]
+        M = sparse.eye(N, N)
+        self.M = M
+        L = -D*dy2.matrix
+       
+        self.L = L
+
 class ViscousBurgers2D:
 
     def __init__(self, u, v, nu, spatial_order, domain):
