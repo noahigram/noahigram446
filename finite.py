@@ -135,7 +135,7 @@ class DifferenceUniformGrid(Difference):
         b[self.derivative_order] = 1
         self.stencil = np.linalg.solve(S,b)
 
-        def _build_matrix(self, grid):
+    def _build_matrix(self, grid):
         shape = [grid.N] * 2
 
         #self.stencil = findiff.coefficients(deriv=self.derivative_order,acc=self.convergence_order)['center']['coefficients'] / (self.dx ** self.derivative_order)
