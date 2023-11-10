@@ -127,7 +127,15 @@ class DifferenceUniformGrid(Difference):
 
         self.stencil = np.linalg.solve(S, b)
 
-    def _build_matrix(self, grid):
+    def _other_stencil(self,grid,jnew):
+        i = np.arange(self.dof)[:,None]
+        jnew = self.j + jnew
+        S = 1/factorial(i)*(jnew * grid.dx)**i
+        b = np.zeros(self.dof)
+        b[self.derivative_order] = 1
+        self.stencil = np.linalg.solve(S,b)
+
+        def _build_matrix(self, grid):
         shape = [grid.N] * 2
 
         #self.stencil = findiff.coefficients(deriv=self.derivative_order,acc=self.convergence_order)['center']['coefficients'] / (self.dx ** self.derivative_order)
@@ -158,34 +166,36 @@ class DifferenceUniformGrid(Difference):
         if jmin > 0:
             for i in range(jmin):
                 if isinstance(grid, UniformNonPeriodicGrid):
-                    pass
+                    self._other_stencil(grid,(jmin-i))
+                    matrix[i,:self.dof] = self.stencil
                     #matrix[i,-jmin+i:] = self.stencil[:jmin-i]
 
 
                 else:
                     matrix[i,-jmin+i:] = self.stencil[:jmin-i]
 
-            if isinstance(grid,UniformNonPeriodicGrid):
-                for i in range(self.dof):
-                    matrix[i,:] = forward_mat[i,:]
-                    matrix[-i-1,:] = backward_mat[-i-1,:]
+            # if isinstance(grid,UniformNonPeriodicGrid):
+            #     for i in range(self.dof):
+            #         matrix[i,:] = forward_mat[i,:]
+            #         matrix[-i-1,:] = backward_mat[-i-1,:]
 
         jmax = np.max(self.j)
         
         if jmax > 0:
             for i in range(jmax):
                 if isinstance(grid, UniformNonPeriodicGrid):
-                    pass
+                    self._other_stencil(grid,-(i+1))
+                    matrix[-jmax+i,-self.dof:] = self.stencil
                     #matrix[-jmax+i,:i+1] = self.stencil[-i-1:]
                     
 
                 else:
                     matrix[-jmax+i,:i+1] = self.stencil[-i-1:]
 
-            if isinstance(grid,UniformNonPeriodicGrid):
-                for i in range(self.dof):
-                    matrix[i,:] = forward_mat[i,:]
-                    matrix[-i-1,:] = backward_mat[-i-1,:]
+            # if isinstance(grid,UniformNonPeriodicGrid):
+            #     for i in range(self.dof):
+            #         matrix[i,:] = forward_mat[i,:]
+            #         matrix[-i-1,:] = backward_mat[-i-1,:]
 
         self.matrix = matrix
 
