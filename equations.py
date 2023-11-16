@@ -3,6 +3,55 @@ from scipy import sparse
 import numpy as np
 import finite
 
+class Wave2DBC:
+
+    def __init__(self, u, v, p, spatial_order, domain):
+        # Initialize u, v, p
+        self.X = StateVector([u,v,p])
+
+        # Calculate derivatives dx and dy
+        self.dx = finite.DifferenceUniformGrid(1,spatial_order,domain.grids[0],0)
+        self.dy = finite.DifferenceUniformGrid(1,spatial_order,domain.grids[1],1)
+
+        self.adv_u = u*0
+        self.adv_v = v*0
+        self.adv_p = p*0
+        self.adv_X = StateVector([self.adv_u,self.adv_v,self.adv_p])
+
+        # Create function F
+        def f(X):
+            N = X.N
+            X.scatter()
+
+            u = X.variables[0]
+            v = X.variables[1]
+            p = X.variables[2]
+
+            self.adv_u[:] = -(self.dx @ p)
+            self.adv_v[:] = -(self.dy @ p)
+            self.adv_p[:] = -(self.dx @ u) - (self.dy @ v)
+            self.adv_X.gather()
+            return self.adv_X.data
+
+        
+        self.F = f
+
+        # Create Boundary Conditions
+
+        def BC(X):
+            N = X.N
+            X.scatter()
+            
+            u = X.variables[0]
+            v = X.variables[1]
+
+            u[0,:] = 0
+            u[-1,:] = 0
+            
+            X.gather()
+            
+        self.BC = BC
+
 class ReactionDiffusion2D:
 
     def __init__(self, c, D, dx2, dy2):
