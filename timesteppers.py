@@ -293,4 +293,88 @@ class BDFExtrapolate(IMEXTimestepper):
     def _step(self, dt):
         pass
 
+class FullyImplicitTimestepper(Timestepper):
+
+    def __init__(self, eq_set, tol=1e-5):
+        super().__init__()
+        self.X = eq_set.X
+        self.M = eq_set.M
+        self.L = eq_set.L
+        self.F = eq_set.F
+        self.tol = tol
+        self.J = eq_set.J
+
+    def step(self, dt, guess=None):
+        self.X.gather()
+        self.X.data = self._step(dt, guess)
+        self.X.scatter()
+        self.t += dt
+        self.iter += 1
+
+
+class BackwardEulerFI(FullyImplicitTimestepper):
+
+    def _step(self, dt, guess):
+        if dt != self.dt:
+            self.LHS_matrix = self.M + dt*self.L
+            self.dt = dt
+
+        RHS = self.M @ self.X.data
+        if not (guess is None):
+            self.X.data[:] = guess
+        F = self.F(self.X)
+        LHS = self.LHS_matrix @ self.X.data - dt * F
+        residual = LHS - RHS
+        i_loop = 0
+        while np.max(np.abs(residual)) > self.tol:
+            jac = self.M + dt*self.L - dt*self.J(self.X)
+            dX = spla.spsolve(jac, -residual)
+            self.X.data += dX
+            F = self.F(self.X)
+            LHS = self.LHS_matrix @ self.X.data - dt * F
+            residual = LHS - RHS
+            i_loop += 1
+            if i_loop > 20:
+                print('error: reached more than 20 iterations')
+                break
+        return self.X.data
+
+
+class CrankNicolsonFI(FullyImplicitTimestepper):
+
+    def _step(self, dt, guess=None):
+        if dt != self.dt:
+            self.LHS_matrix = self.M + (dt/2)*self.L
+            self.dt = dt 
+        RHS = (self.M @ self.X.data) - (dt/2)*(self.L @ self.X.data) + (dt/2)*self.F(self.X)
+
+        # Use guess if provided, if not use current X
+        if not (guess is None):
+            self.X.data[:] = guess
+
+        # Apply LHS to guess
+
+        LHS = self.LHS_matrix @ self.X.data - (dt/2)*self.F(self.X)
+        # Calculate residual
+        residual = LHS - RHS
+        i_loop = 0
+        # Calculate jacobian and matrix solve until residual is less than tolerance
+        
+        while np.max(np.abs(residual)) > self.tol:
+            
+            self.LHS_matrix = self.M + (dt/2)*self.L
+            jac = self.LHS_matrix - (dt/2)*self.J(self.X)
+            dX = spla.spsolve(jac, -residual)
+            self.X.data += dX
+            LHS = self.LHS_matrix @ self.X.data - (dt/2)*self.F(self.X)
+            residual = LHS - RHS
+            i_loop += 1
+            
+            
+            
+           
+        return self.X.data
+        
+
+
 
