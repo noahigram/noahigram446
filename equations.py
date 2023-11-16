@@ -3,6 +3,57 @@ from scipy import sparse
 import numpy as np
 import finite
 
+class ReactionDiffusionFI:
+    
+    def __init__(self, c, D, spatial_order, grid):
+        self.X = StateVector([c])
+        d2 = finite.DifferenceUniformGrid(2, spatial_order, grid)
+        self.N = len(c)
+        
+        I = sparse.eye(self.N)
+        
+        self.M = I
+        self.L = -D*d2.matrix
+
+        def F(X):
+            return X.data*(1-X.data)
+        self.F = F
+        
+        def J(X):
+            c_matrix = sparse.diags(X.data)
+            return sparse.eye(self.N) - 2*c_matrix
+        
+        self.J = J
+
+
+class BurgersFI:
+    
+    def __init__(self, u, nu, spatial_order, grid):
+        self.X = StateVector([u])
+        self.N = len(u)
+        self.h = grid.dx
+        
+        # Calculate derivatives dx and d2x
+        self.dx = finite.DifferenceUniformGrid(1,spatial_order,grid)
+        self.d2x = finite.DifferenceUniformGrid(2,spatial_order,grid)
+
+        self.M = sparse.eye(self.N)
+        self.L = -nu*self.d2x.matrix
+
+        def f(X):
+            return -X.data*(self.dx @ X.data)
+        
+        self.F = f
+        
+        def J(X):
+            
+            diag = -(self.dx @ X.data)
+            superdiag = -X.data/2/self.h
+            subdiag = X.data/2/self.h    
+            return sparse.diags([subdiag,diag,superdiag],[-1,0,1],shape=(X.N,X.N))
+
+        self.J = J
+
 class Wave2DBC:
 
     def __init__(self, u, v, p, spatial_order, domain):
