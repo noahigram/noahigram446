@@ -54,6 +54,43 @@ class BurgersFI:
 
         self.J = J
 
+class ReactionTwoSpeciesDiffusion:
+    
+    def __init__(self, X, D, r, spatial_order, grid):
+        self.X = X
+        self.r = r
+        d2x = finite.DifferenceUniformGrid(2,spatial_order,grid)
+
+        
+        I = sparse.eye(len(X.data))
+        Z = sparse.csr_matrix((X.N,X.N))
+        self.M = sparse.bmat([I,Z],[Z,I])
+        L1 = -D*d2x
+        self.L = sparse.bmat([L1,Z],[Z,L1])
+
+        # Calculate F
+        def f(X):
+            c1 = X.variables[0].copy()
+            c2 = X.variables[1].copy()
+            RHS1 = c1*(1 - c1 - c2)
+            RHS2 = self.r*c2*(c1 - c2)
+
+            return np.vstack([RHS1,RHS2])
+        self.F = f
+        
+        def J(X):
+            c1 = X.variables[0]
+            c2 = X.variables[1]
+            
+            J11 = sparse.eye(X.N) + sparse.diags(-2*c1-c2)
+            J12 = sparse.diags(-c1)
+            J21 = sparse.diags(r*c2)
+            J22 = sparse.diags(r*c1-2*r*c2)
+
+            return sparse.bmat([J11,J12],[J21,J22])
+
+        self.J = J
+
 class Wave2DBC:
 
     def __init__(self, u, v, p, spatial_order, domain):
