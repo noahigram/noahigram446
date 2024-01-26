@@ -30,8 +30,5 @@ jobs:
     - name: Test script with pytest
       if: always()
       run: |
-        pytest hw8_test1.py
-    - name: Test script with pytest
-      if: always()
-      run: |
-        pytest hw8_test2.py
+        pytest test_fourier_transforms.py
+   
