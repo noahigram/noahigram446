@@ -1,5 +1,28 @@
 import numpy as np
 import scipy.fft
+import scipy.sparse.linalg as spla
+from scipy import sparse
+from collections import deque
+
+# These functions are by Keaton Burns
+def axindex(axis, index):
+    """Index array along specified axis."""
+    if axis < 0:
+        raise ValueError("`axis` must be positive")
+    # Add empty slices for leading axes
+    return (slice(None),)*axis + (index,)
+
+def axslice(axis, start, stop, step=None):
+    """Slice array along a specified axis."""
+    return axindex(axis, slice(start, stop, step))
+
+def reshape_vector(data, dim=2, axis=-1):
+    """Reshape 1-dim array as a multidimensional vector."""
+    # Build multidimensional shape
+    shape = [1] * dim
+    shape[axis] = data.size
+    return data.reshape(shape)
+
 
 class Basis:
 
@@ -12,14 +35,40 @@ class Fourier(Basis):
 
     def __init__(self, N, interval=(0, 2*np.pi)):
         super().__init__(N, interval)
-        self.scale = 0
 
     def grid(self, scale=1):
         N_grid = int(np.ceil(self.N*scale))
         return np.linspace(self.interval[0], self.interval[1], num=N_grid, endpoint=False)
 
+    def wavenumbers(self, dtype=np.float64):
+        if dtype == np.float64:
+            k_half = np.arange(self.N//2, dtype=np.float64)
+            k = np.zeros(self.N, dtype=np.float64)
+            k[::2] = k_half
+            k[1::2] = k_half
+        elif dtype == np.complex128:
+            k = np.arange(self.N, dtype=np.float64)
+            k[-self.N//2:] -= self.N
+        k *= 2*np.pi/(self.interval[1] - self.interval[0])
+        return k
+
+    def unique_wavenumbers(self, dtype=np.float64):
+        if dtype == np.float64:
+            return self.wavenumbers(dtype=dtype)[::2]
+        else:
+            return self.wavenumbers(dtype=dtype)
+
+    def slice(self, wavenumber, dtype=np.float64):
+        i = np.argwhere(self.unique_wavenumbers(dtype) == wavenumber)[0,0]
+        if dtype == np.float64:
+            index = slice(2*i, 2*i+2, None)
+        elif dtype == np.complex128:
+            index = slice(i, i+1, None)
+        return index
+
     def transform_to_grid(self, data, axis, dtype, scale=1):
         if dtype == np.complex128:
+            
             return self._transform_to_grid_complex(data, axis, scale)
         elif dtype == np.float64:
             return self._transform_to_grid_real(data, axis, scale)
@@ -34,66 +83,81 @@ class Fourier(Basis):
         else:
             raise NotImplementedError("Can only perform transforms for float64 or complex128")
 
+    def _resize_rescale_complex(self, data_in, data_out, axis, Kmax, rescale):
+        # array indices for padding
+        posfreq = axslice(axis, 0, Kmax+1)
+        badfreq = axslice(axis, Kmax+1, -Kmax)
+        negfreq = axslice(axis, -Kmax, None)
+        # rescale
+        np.multiply(data_in[posfreq], rescale, data_out[posfreq])
+        data_out[badfreq] = 0
+        np.multiply(data_in[negfreq], rescale, data_out[negfreq])
+
     def _transform_to_grid_complex(self, data, axis, scale):
         N_grid = int(np.ceil(self.N*scale))
-        if scale == 1:
-            return scipy.fft.ifft(data)*self.N
-        else:
-            # Scale is not 1, so we find coeffs of scaled grid then convert back
-            N = len(data)
-            self.scale=scale
-            
-            N_add = N_grid - N # Number of data points to add
-
-            # Add 0s between -N/2 and -N/2 + 1 ????
-            new_coeffs = np.zeros(N_grid,dtype=np.complex128)
-            
-            left = data[:int(N/2)]
-            right = data[int(N/2):]
-            new_coeffs[:int(N/2)] = left
-            new_coeffs[-int(N/2):] = right
-            return scipy.fft.ifft(new_coeffs)*(scale*self.N)
-        
-    
+        shape = list(data.shape)
+        shape[axis] = N_grid
+        grid_data = np.zeros(shape, dtype=np.complex128)
+        Kmax = (self.N - 1) // 2
+        self._resize_rescale_complex(data, grid_data, axis, Kmax, N_grid)
+        grid_data = scipy.fft.ifft(grid_data, axis=axis)
+        return grid_data
 
     def _transform_to_coeff_complex(self, data, axis):
-            coeffs1 = scipy.fft.fft(data)
-            new_coeffs = np.zeros(self.N,dtype=np.complex128)
-            
-            new_coeffs[:int(self.N/2)] = coeffs1[:int(self.N/2)]
-            new_coeffs[-int(self.N/2):] = coeffs1[-int(self.N/2):]
+        shape = list(data.shape)
+        N_grid = shape[axis]
+        shape[axis] = self.N
+        coeff_data = np.zeros(shape, dtype=np.complex128)
+        data = scipy.fft.fft(data, axis=axis)
+        Kmax = (self.N - 1) // 2
+        self._resize_rescale_complex(data, coeff_data, axis, Kmax, 1/N_grid)
+        return coeff_data
 
-            if self.scale==0:
-                return new_coeffs/self.N
-            else:
-                return new_coeffs/(self.N*self.scale)
+    def _pack_rescale_real(self, data_in, data_out, axis, Kmax, rescale):
+        # pack real data_in into complex data_out for irfft
+        meancos = axslice(axis, 0, 1)
+        data_out[meancos] = data_in[meancos] * rescale
+        posfreq = axslice(axis, 1, Kmax+1)
+        badfreq = axslice(axis, Kmax+1, None)
+        posfreq_cos = axslice(axis, 2, (Kmax+1)*2, 2)
+        posfreq_msin = axslice(axis, 3, (Kmax+1)*2, 2)
+        np.multiply(data_in[posfreq_cos], rescale/2, data_out[posfreq].real)
+        np.multiply(data_in[posfreq_msin], rescale/2, data_out[posfreq].imag)
+        data_out[badfreq] = 0.
 
     def _transform_to_grid_real(self, data, axis, scale):
         N_grid = int(np.ceil(self.N*scale))
-        print(N_grid)
-        
-        if scale == 1:
-            inv_four = scipy.fft.irfft(data)*self.N
-            return inv_four[:self.N]
-        
-        else:
-            self.scale=scale
-            inv_real1 = scipy.fft.irfft(data,n=N_grid)*self.N*scale
-            inv_real2 = scipy.fft.irfft(data)*self.N*scale
-            print(len(inv_real2))
+        shape = list(data.shape)
+        shape[axis] = (N_grid + 1)//2 # divide by 2 for complex
+        grid_data = np.zeros(shape, dtype=np.complex128)
+        Kmax = (self.N - 1) // 2
+        self._pack_rescale_real(data, grid_data, axis, Kmax, N_grid)
+        grid_data = scipy.fft.irfft(grid_data, axis=axis, n=N_grid) # note we need the n=N_grid!!
+        return grid_data
 
-            return inv_real2[:N_grid]
-
+    def _unpack_scale_real(self, data_in, data_out, axis, Kmax, rescale):
+        # unpack complex data_in from rfft into real data_out
+        meancos = axslice(axis, 0, 1)
+        meansin = axslice(axis, 1, 2)
+        data_out[meancos] = data_in[meancos].real * rescale
+        data_out[meansin] = 0
+        posfreq = axslice(axis, 1, Kmax+1)
+        badfreq = axslice(axis, 2*(Kmax+1), None)
+        posfreq_cos = axslice(axis, 2, (Kmax+1)*2, 2)
+        posfreq_msin = axslice(axis, 3, (Kmax+1)*2, 2)
+        np.multiply(data_in[posfreq].real, 2*rescale, data_out[posfreq_cos])
+        np.multiply(data_in[posfreq].imag, 2*rescale, data_out[posfreq_msin])
+        data_out[badfreq] = 0.
 
     def _transform_to_coeff_real(self, data, axis):
-
-        new_coeffs = scipy.fft.rfft(data,n=2*(self.N-1))
-
-        if self.scale == 0:
-            return new_coeffs/self.N
-
-        else:
-            return new_coeffs/(self.N*self.scale)
+        shape = list(data.shape)
+        N_grid = shape[axis]
+        shape[axis] = self.N
+        coeff_data = np.zeros(shape, dtype=np.float64)
+        data = scipy.fft.rfft(data, axis=axis)
+        Kmax = (self.N - 1) // 2
+        self._unpack_scale_real(data, coeff_data, axis, Kmax, 1/N_grid)
+        return coeff_data
 
 
 class Field:
@@ -111,6 +175,12 @@ class Field:
         if not hasattr(scales, "__len__"):
             scales = [scales] * self.dim
         return scales
+
+    def subproblem_length(self):
+        N = self.bases[-1].N
+        if self.dtype == np.float64:
+            N *= 2**(len(self.bases)-1)
+        return N
 
     def towards_coeff_space(self):
         if self.coeff.all():
@@ -141,6 +211,182 @@ class Field:
         if not self.coeff.any(): 
             # already in full grid space
             return
+        
         else:
             self.towards_grid_space(scales)
             self.require_grid_space(scales)
+
+
+class Problem:
+
+    def __init__(self, variables):
+        self.variables = variables
+        # assume all variables have the same dtype and bases
+        self.dtype = variables[0].dtype
+        bases = variables[0].bases
+        self.subproblems = []
+        if len(bases) > 1:
+            shape = [len(basis.unique_wavenumbers(self.dtype)) for basis in bases[:-1]]
+            for i in range(np.prod(shape)):
+                multiindex = np.unravel_index(i, shape)
+                wavenumbers = [basis.unique_wavenumbers(self.dtype)[j] for (basis, j) in zip(bases[:-1], multiindex)]
+                slices = [basis.slice(wavenumber, self.dtype) for (basis, wavenumber) in zip(bases[:-1], wavenumbers)]
+                self.subproblems.append(Subproblem(slices, wavenumbers))
+        else:
+            slices = [slice(None, None, None)]
+            self.subproblems.append(Subproblem(slices, 1))
+        self.X = StateVector(variables, self)
+
+
+class InitialValueProblem(Problem):
+
+    def __init__(self, variables, RHS_variables):
+        super().__init__(variables)
+        self.F = StateVector(RHS_variables, self)
+
+
+class Timestepper:
+
+    def __init__(self, problem):
+        self.problem = problem
+        self.iteration = 0
+        self.time = 0
+        self.dt = deque([0]*self.amax)
+        for sp in problem.subproblems:
+            shape = problem.X.vector.shape
+            sp.LX = deque()
+            sp.MX = deque()
+            for a in range(self.amax):
+                sp.MX.append(np.zeros(shape, problem.dtype))
+            sp.LX = deque()
+            for b in range(self.bmax):
+                sp.LX.append(np.zeros(shape, problem.dtype))
+            sp.F = deque()
+            for c in range(self.cmax):
+                sp.F.append(np.zeros(shape, problem.dtype))
+            sp.RHS = np.zeros(shape, problem.dtype)
+
+    def step(self, dt):
+        problem = self.problem
+        X = problem.X
+        F = problem.F
+        self.dt.rotate()
+        self.dt[0] = dt
+        a, b, c = self.coefficients(self.dt, self.iteration)
+        for sp in problem.subproblems:
+            F.gather(sp)
+            sp.F.rotate()
+            np.copyto(sp.F[0], F.vector)
+
+            X.gather(sp)
+            if self.amax > 0:
+                sp.MX.rotate()
+                sp.MX[0] = sp.M @ X.vector
+            if self.bmax > 0:
+                sp.LX.rotate()
+                sp.LX[0] = sp.L @ X.vector
+
+            sp.RHS = c[0]*sp.F[0]
+            
+            for i in range(1, len(c)):
+                sp.RHS += c[i]*sp.F[i]
+            for i in range(1, len(b)):
+                sp.RHS -= b[i]*sp.LX[i-1]
+            for i in range(1, len(a)):
+                sp.RHS -= a[i]*sp.MX[i-1]
+            sp.RHS = sp.RHS
+
+            LHS = a[0]*sp.M + b[0]*sp.L
+            X.vector = spla.spsolve(LHS, sp.RHS)
+            X.scatter(sp)
+
+        self.time += dt
+        self.iteration += 1
+       
+
+
+class SBDF1(Timestepper):
+
+    amax = 1
+    bmax = 0
+    cmax = 1
+
+    @classmethod
+    def coefficients(self, dt, iteration):
+        a = np.zeros(self.amax+1)
+        b = np.zeros(self.bmax+1)
+        c = np.zeros(self.cmax)
+        dt = dt[0]
+        a[0] = 1/dt
+        a[1] = -1/dt
+        b[0] = 1
+        c[0] = 1
+
+        return a, b, c
+
+
+class SBDF2(Timestepper):
+
+    amax = 2
+    bmax = 0
+    cmax = 2
+
+    @classmethod
+    def coefficients(self, dt, iteration):
+        if iteration == 0:
+            return SBDF1.coefficients(dt, iteration)
+
+        h, k = dt[0], dt[1]
+        w = h/k
+
+        a = np.zeros(self.amax+1)
+        b = np.zeros(self.bmax+1)
+        c = np.zeros(self.cmax)
+        a[0] = (1 + 2*w) / (1 + w) / h
+        a[1] = -(1 + w) / h
+        a[2] = w**2 / (1 + w) / h
+        b[0] = 1
+        c[0] = 1 + w
+        c[1] = -w
+
+        return a, b, c
+
+
+class StateVector:
+
+    def __init__(self, fields, problem):
+        self.dtype = problem.dtype
+        self.fields = fields
+        self.subproblems = problem.subproblems
+        data_size = len(fields)*fields[0].subproblem_length()
+        self.vector = np.zeros(data_size, dtype=self.dtype)
+
+    def gather(self, sp):
+        for field in self.fields:
+            field.require_coeff_space()
+        sp.gather(self.fields, self.vector)
+
+    def scatter(self, sp):
+        for field in self.fields:
+            field.require_coeff_space()
+        sp.scatter(self.fields, self.vector)
+
+
+class Subproblem:
+
+    def __init__(self, slices, wavenumbers):
+        self.slices = tuple(slices)
+        self.wavenumbers = wavenumbers
+
+    def gather(self, fields, vector):
+        for i, field in enumerate(fields):
+            N = field.subproblem_length()
+            vector[i*N:(i+1)*N] = field.data[self.slices].ravel()
+
+    def scatter(self, fields, vector):
+        for i, field in enumerate(fields):
+            N = field.subproblem_length()
+            shape = field.data[self.slices].shape
+            field.data[self.slices] = vector[i*N:(i+1)*N].reshape(shape)
+            
+
