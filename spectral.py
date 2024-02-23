@@ -31,6 +31,37 @@ class Basis:
         self.interval = interval
 
 
+class Chebyshev(Basis):
+
+    def __init__(self, N, interval=(0, 2*np.pi)):
+        super().__init__(N, interval)
+
+    def grid(self, scale=1):
+        N_grid = int(np.ceil(self.N*scale))
+        i = np.arange(N_grid)
+        return 0.5*(self.interval[1]+self.interval[0]) + 0.5*(self.interval[1]-self.interval[0])*np.cos((2*i+1)*np.pi/(2*N_grid))
+        #return np.cos((2*i+1)/(2*N_grid)*np.pi)
+
+    def transform_to_grid(self, data, axis, dtype, scale=1):
+        N_grid = int(np.ceil(self.N*scale))
+        shape = list(data.shape)
+        shape[axis] = N_grid
+        coeff_data = np.zeros(shape, dtype=dtype)
+        zero = axslice(axis, 0, 1)
+        coeff_data[zero] = data[zero]
+        nonzero = axslice(axis, 1, self.N)
+        coeff_data[nonzero] = data[nonzero]/2
+        return scipy.fft.dct(coeff_data, type=3, axis=axis)
+
+    def transform_to_coeff(self, data, axis, dtype):
+        coeff_data = scipy.fft.dct(data, type=2, axis=axis)
+        coeff_data = coeff_data[axslice(axis, 0, self.N)]
+        N_grid = data.shape[axis]
+        coeff_data[axslice(axis, 0, 1)] /= 2*N_grid
+        coeff_data[axslice(axis, 1, self.N)] /= N_grid
+        return coeff_data
+
+
 class Fourier(Basis):
 
     def __init__(self, N, interval=(0, 2*np.pi)):
@@ -68,7 +99,6 @@ class Fourier(Basis):
 
     def transform_to_grid(self, data, axis, dtype, scale=1):
         if dtype == np.complex128:
-            
             return self._transform_to_grid_complex(data, axis, scale)
         elif dtype == np.float64:
             return self._transform_to_grid_real(data, axis, scale)
@@ -211,7 +241,6 @@ class Field:
         if not self.coeff.any(): 
             # already in full grid space
             return
-        
         else:
             self.towards_grid_space(scales)
             self.require_grid_space(scales)
@@ -219,8 +248,9 @@ class Field:
 
 class Problem:
 
-    def __init__(self, variables):
+    def __init__(self, variables, num_BCs=0):
         self.variables = variables
+        self.num_BCs = num_BCs
         # assume all variables have the same dtype and bases
         self.dtype = variables[0].dtype
         bases = variables[0].bases
@@ -235,14 +265,14 @@ class Problem:
         else:
             slices = [slice(None, None, None)]
             self.subproblems.append(Subproblem(slices, 1))
-        self.X = StateVector(variables, self)
+        self.X = StateVector(variables, self, num_BCs)
 
 
 class InitialValueProblem(Problem):
 
-    def __init__(self, variables, RHS_variables):
-        super().__init__(variables)
-        self.F = StateVector(RHS_variables, self)
+    def __init__(self, variables, RHS_variables, num_BCs=0):
+        super().__init__(variables, num_BCs)
+        self.F = StateVector(RHS_variables, self, num_BCs)
 
 
 class Timestepper:
@@ -251,6 +281,8 @@ class Timestepper:
         self.problem = problem
         self.iteration = 0
         self.time = 0
+        self.a0_old = None
+        self.b0_old = None
         self.dt = deque([0]*self.amax)
         for sp in problem.subproblems:
             shape = problem.X.vector.shape
@@ -266,7 +298,10 @@ class Timestepper:
                 sp.F.append(np.zeros(shape, problem.dtype))
             sp.RHS = np.zeros(shape, problem.dtype)
 
-    def step(self, dt):
+            if problem.num_BCs > 0:
+                sp.taus = np.zeros(problem.num_BCs, dtype=problem.dtype)
+
+    def step(self, dt, BCs=None):
         problem = self.problem
         X = problem.X
         F = problem.F
@@ -274,7 +309,7 @@ class Timestepper:
         self.dt[0] = dt
         a, b, c = self.coefficients(self.dt, self.iteration)
         for sp in problem.subproblems:
-            F.gather(sp)
+            F.gather(sp, BCs)
             sp.F.rotate()
             np.copyto(sp.F[0], F.vector)
 
@@ -287,22 +322,28 @@ class Timestepper:
                 sp.LX[0] = sp.L @ X.vector
 
             sp.RHS = c[0]*sp.F[0]
-            
             for i in range(1, len(c)):
                 sp.RHS += c[i]*sp.F[i]
             for i in range(1, len(b)):
                 sp.RHS -= b[i]*sp.LX[i-1]
             for i in range(1, len(a)):
                 sp.RHS -= a[i]*sp.MX[i-1]
-            sp.RHS = sp.RHS
 
-            LHS = a[0]*sp.M + b[0]*sp.L
-            X.vector = spla.spsolve(LHS, sp.RHS)
-            X.scatter(sp)
+            if self.a0_old != a[0] or self.b0_old != b[0]:
+                LHS = a[0]*sp.M + b[0]*sp.L
+                LHS = LHS.astype(problem.dtype)
+                sp.LU = spla.splu(LHS.T)
+            X.vector = sp.LU.solve(sp.RHS, trans='T')
+            if problem.num_BCs > 0:
+                X.scatter(sp, sp.taus)
+            else:
+                X.scatter(sp)
+
+        self.a0_old = a[0]
+        self.b0_old = b[0]
 
         self.time += dt
         self.iteration += 1
-       
 
 
 class SBDF1(Timestepper):
@@ -354,22 +395,27 @@ class SBDF2(Timestepper):
 
 class StateVector:
 
-    def __init__(self, fields, problem):
+    def __init__(self, fields, problem, num_BCs):
         self.dtype = problem.dtype
         self.fields = fields
+        self.num_BCs = num_BCs
         self.subproblems = problem.subproblems
-        data_size = len(fields)*fields[0].subproblem_length()
+        data_size = len(fields)*fields[0].subproblem_length() + num_BCs
         self.vector = np.zeros(data_size, dtype=self.dtype)
 
-    def gather(self, sp):
+    def gather(self, sp, BCs=None):
         for field in self.fields:
             field.require_coeff_space()
         sp.gather(self.fields, self.vector)
+        if not (BCs is None):
+            self.vector[-self.num_BCs:] = BCs
 
-    def scatter(self, sp):
+    def scatter(self, sp, taus=None):
         for field in self.fields:
             field.require_coeff_space()
         sp.scatter(self.fields, self.vector)
+        if not (taus is None):
+            np.copyto(taus, self.vector[-self.num_BCs:])
 
 
 class Subproblem:
@@ -388,5 +434,4 @@ class Subproblem:
             N = field.subproblem_length()
             shape = field.data[self.slices].shape
             field.data[self.slices] = vector[i*N:(i+1)*N].reshape(shape)
-            
 
