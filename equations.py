@@ -39,6 +39,7 @@ class SoundWaves:
         sp.M = sparse.csr_matrix((2*N+2,2*N+2))
         sp.M[:N,:N] = self.C
         sp.M[N:2*N,N:2*N] = self.C
+        
 
         # L matrix
         BC_rows = np.zeros((2, 2*N))
@@ -69,7 +70,7 @@ class SoundWaves:
         p =self.p
         p_RHS = self.p_RHS
         p0 = self.p0
-        print(u.data)
+ 
 
         for i in range(num_steps):
             # take a timestep
@@ -85,10 +86,10 @@ class SoundWaves:
             
             p0.require_coeff_space()
     
-            u.require_grid_space(scales=2)
+            u.require_grid_space(scales=3/2)
             
-            p0.require_grid_space(scales=2)
-            p_RHS.require_grid_space(scales=2)
+            p0.require_grid_space(scales=3/2)
+            p_RHS.require_grid_space(scales=3/2)
             p_RHS.data = (1 - p0.data)*p_RHS.data
           
         
@@ -103,14 +104,82 @@ class SoundWaves:
 class CGLEquation:
 
     def __init__(self, u):
-        pass
+        self.u = u
+
+        self.x_basis = u.bases[0]
+        self.dtype = dtype = u.dtype
+        N = self.x_basis.N
+
+        # Define fields
+        self.ux = spectral.Field([self.x_basis], dtype=dtype)
+        self.u_RHS = spectral.Field([self.x_basis], dtype=dtype)
+        self.ux_RHS = spectral.Field([self.x_basis], dtype=dtype)
+
+        
+        self.problem = spectral.InitialValueProblem([u, self.ux], [self.u_RHS, self.ux_RHS],
+                                                    num_BCs=2)
+        sp = self.problem.subproblems[0]
+
+        # C conversion matric
+        diag0 = np.ones(N)/2
+        diag0[0] = 1
+        diag2 = -np.ones(N-2)/2
+        self.C = sparse.diags((diag0, diag2), offsets=(0,2))
+
+        # D derivative matrix - Need to change to reflect interval being [0,L] instead of [-1,1]
+        
+        constant = 2/self.x_basis.interval[1]
+        diag = constant*(np.arange(N-1)+1)
+        self.D = sparse.diags(diag, offsets=1)
+
+        self.ux.data = self.D @ self.u.data
+
+
+        # M matrix
+        sp.M = sparse.csr_matrix((2*N+2,2*N+2))
+        
+        sp.M[N:2*N,:N] = self.C
+
+        # L matrix
+        BC_rows = np.zeros((2, 2*N))
+        i = np.arange(N)
+        BC_rows[0, :N] = (-1)**i
+        BC_rows[1, :N] = (+1)**i
+
+        cols = np.zeros((2*N,2))
+        cols[  N-1, 0] = 1
+        cols[2*N-1, 1] = 1
+        corner = np.zeros((2,2))
+
+        L = sparse.bmat([[self.D, -self.C],
+                         [-self.C, -(1+0.5j)*self.D]])
+        L = sparse.bmat([[      L,   cols],
+                         [BC_rows, corner]])
+        sp.L = L
+        sp.L.eliminate_zeros()
+        self.t = 0
 
     def evolve(self, timestepper, dt, num_steps):
         ts = timestepper(self.problem)
+        u = self.u
+        ux = self.ux
+        ux_RHS = self.u_RHS
 
         for i in range(num_steps):
             # take a timestep
-            pass
+            # initialize in coeff space
+            u.require_coeff_space()
+            ux.require_coeff_space()
+            ux_RHS.require_coeff_space()
+
+            u.require_grid_space(scales=3/2)
+            ux.require_grid_space(scales=3/2)
+            ux_RHS.require_grid_space(scales=3/2)
+
+            ux_RHS.data = -(1-1.76j)*((np.abs(u.data))**2)*u.data
+            ux_RHS.data = self.C @ ux_RHS.data
+            ts.step(dt, [0,0])
+            self.t += dt
 
 
 class KdVEquation:
