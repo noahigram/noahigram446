@@ -3,6 +3,7 @@ import spectral
 import numpy as np
 from scipy import sparse
 from scipy.sparse import linalg as spla
+import pytest
 
 
 class SoundWaves:
@@ -107,7 +108,7 @@ class CGLEquation:
         self.u = u
 
         self.x_basis = u.bases[0]
-        self.dtype = dtype = u.dtype
+        dtype = u.dtype
         N = self.x_basis.N
 
         # Define fields
@@ -116,11 +117,11 @@ class CGLEquation:
         self.ux_RHS = spectral.Field([self.x_basis], dtype=dtype)
 
         
-        self.problem = spectral.InitialValueProblem([u, self.ux], [self.u_RHS, self.ux_RHS],
+        self.problem = spectral.InitialValueProblem([self.u, self.ux], [self.u_RHS, self.ux_RHS],
                                                     num_BCs=2)
         sp = self.problem.subproblems[0]
 
-        # C conversion matric
+        # C conversion matrix
         diag0 = np.ones(N)/2
         diag0[0] = 1
         diag2 = -np.ones(N-2)/2
@@ -128,17 +129,18 @@ class CGLEquation:
 
         # D derivative matrix - Need to change to reflect interval being [0,L] instead of [-1,1]
         
-        constant = 2/self.x_basis.interval[1]
-        diag = constant*(np.arange(N-1)+1)
-        self.D = sparse.diags(diag, offsets=1)
+    
+        diag = np.arange(N-1)+1
+        D = sparse.diags(diag, offsets=1)
+        self.D = 2*D/self.x_basis.interval[1]
 
-        self.ux.data = self.D @ self.u.data
-
-
+    
         # M matrix
-        sp.M = sparse.csr_matrix((2*N+2,2*N+2))
+        M = sparse.csr_matrix((2*N+2,2*N+2))
         
-        sp.M[N:2*N,:N] = self.C
+        M[N:2*N,:N] = self.C
+        M.eliminate_zeros()
+        sp.M = M
 
         # L matrix
         BC_rows = np.zeros((2, 2*N))
@@ -155,15 +157,16 @@ class CGLEquation:
                          [-self.C, -(1+0.5j)*self.D]])
         L = sparse.bmat([[      L,   cols],
                          [BC_rows, corner]])
+        L.eliminate_zeros()
         sp.L = L
-        sp.L.eliminate_zeros()
+    
         self.t = 0
 
     def evolve(self, timestepper, dt, num_steps):
         ts = timestepper(self.problem)
         u = self.u
         ux = self.ux
-        ux_RHS = self.u_RHS
+        ux_RHS = self.ux_RHS
 
         for i in range(num_steps):
             # take a timestep
@@ -172,11 +175,12 @@ class CGLEquation:
             ux.require_coeff_space()
             ux_RHS.require_coeff_space()
 
-            u.require_grid_space(scales=3/2)
-            ux.require_grid_space(scales=3/2)
-            ux_RHS.require_grid_space(scales=3/2)
+            u.require_grid_space(scales=2)
+            ux.require_grid_space(scales=2)
+            ux_RHS.require_grid_space(scales=2)
 
-            ux_RHS.data = -(1-1.76j)*((np.abs(u.data))**2)*u.data
+            ux_RHS.data = -(1-1.76j)*u.data*np.conjugate(u.data)*u.data
+            ux_RHS.require_coeff_space()
             ux_RHS.data = self.C @ ux_RHS.data
             ts.step(dt, [0,0])
             self.t += dt
@@ -242,4 +246,5 @@ class SHEquation:
             u_RHS.require_grid_space(scales=self.dealias)
             u_RHS.data = 1.8*u.data**2 - u.data**3
             ts.step(dt)
+
 
